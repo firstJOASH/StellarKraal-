@@ -152,6 +152,32 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
 });
 
 const PORT = parseInt(process.env.PORT || "3001", 10);
-app.listen(PORT, () => console.log(`StellarKraal API running on :${PORT}`));
+const server_instance = app.listen(PORT, () => console.log(`StellarKraal API running on :${PORT}`));
+
+// ── Graceful Shutdown ─────────────────────────────────────────────────────────
+
+let isShuttingDown = false;
+
+const gracefulShutdown = (signal: string) => {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+
+  console.log(`\n${signal} received. Starting graceful shutdown...`);
+
+  // Stop accepting new connections
+  server_instance.close(() => {
+    console.log("Http server closed.");
+    process.exit(0);
+  });
+
+  // Force shutdown after 30 seconds
+  setTimeout(() => {
+    console.error("Could not close connections in time, forcefully shutting down");
+    process.exit(1);
+  }, 30000);
+};
+
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));
 
 export default app;
