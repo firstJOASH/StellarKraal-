@@ -1,6 +1,24 @@
 import request from "supertest";
 import app from "../src/index";
 
+// Mock the RPC client
+jest.mock("./utils/rpcClient", () => ({
+  __esModule: true,
+  default: {
+    getAccount: jest.fn().mockResolvedValue({ id: "GABC", sequence: "1" }),
+    prepareTransaction: jest.fn().mockResolvedValue({ toXDR: () => "prepared_xdr" }),
+    simulateTransaction: jest.fn().mockResolvedValue({ result: { retval: { value: 42 } } }),
+    getHealth: jest.fn().mockResolvedValue({ status: "healthy" }),
+    getCircuitStates: jest.fn().mockReturnValue({
+      getAccount: "closed",
+      prepareTransaction: "closed",
+      simulateTransaction: "closed",
+      getHealth: "closed",
+    }),
+    isHealthy: jest.fn().mockReturnValue(true),
+  },
+}));
+
 // Mock stellar-sdk to avoid real network calls
 jest.mock("@stellar/stellar-sdk", () => {
   const actual = jest.requireActual("@stellar/stellar-sdk");

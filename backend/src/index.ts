@@ -10,14 +10,12 @@ import {
   Address,
   xdr,
 } from "@stellar/stellar-sdk";
-import { SorobanRpc } from "@stellar/stellar-sdk";
-const { Server } = SorobanRpc;
+import rpcClient from "./utils/rpcClient";
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-const RPC_URL = process.env.RPC_URL || "https://soroban-testnet.stellar.org";
 const CONTRACT_ID = process.env.CONTRACT_ID || "";
 const NETWORK_PASSPHRASE =
   process.env.NEXT_PUBLIC_NETWORK === "mainnet"
@@ -32,7 +30,7 @@ async function buildContractTx(
   method: string,
   args: xdr.ScVal[]
 ): Promise<string> {
-  const account = await server.getAccount(sourceAddress);
+  const account = await rpcClient.getAccount(sourceAddress);
   const contract = new Contract(CONTRACT_ID);
   const tx = new TransactionBuilder(account, {
     fee: BASE_FEE,
@@ -42,7 +40,7 @@ async function buildContractTx(
     .setTimeout(30)
     .build();
 
-  const prepared = await server.prepareTransaction(tx);
+  const prepared = await rpcClient.prepareTransaction(tx);
   return prepared.toXDR();
 }
 
@@ -98,7 +96,7 @@ app.post("/api/loan/repay", async (req: Request, res: Response, next: NextFuncti
 app.get("/api/loan/:id", async (req: Request, res: Response, next: NextFunction) => {
   try {
     const contract = new Contract(CONTRACT_ID);
-    const account = await server.getAccount(
+    const account = await rpcClient.getAccount(
       "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN" // fee-less read account
     );
     const tx = new TransactionBuilder(account, {
@@ -111,7 +109,7 @@ app.get("/api/loan/:id", async (req: Request, res: Response, next: NextFunction)
       .setTimeout(30)
       .build();
 
-    const result = await server.simulateTransaction(tx);
+    const result = await rpcClient.simulateTransaction(tx);
     res.json({ result: (result as any).result?.retval });
   } catch (e) {
     next(e);
@@ -122,7 +120,7 @@ app.get("/api/loan/:id", async (req: Request, res: Response, next: NextFunction)
 app.get("/api/health/:loanId", async (req: Request, res: Response, next: NextFunction) => {
   try {
     const contract = new Contract(CONTRACT_ID);
-    const account = await server.getAccount(
+    const account = await rpcClient.getAccount(
       "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN"
     );
     const tx = new TransactionBuilder(account, {
@@ -138,7 +136,7 @@ app.get("/api/health/:loanId", async (req: Request, res: Response, next: NextFun
       .setTimeout(30)
       .build();
 
-    const result = await server.simulateTransaction(tx);
+    const result = await rpcClient.simulateTransaction(tx);
     res.json({ health_factor: (result as any).result?.retval });
   } catch (e) {
     next(e);
@@ -147,6 +145,15 @@ app.get("/api/health/:loanId", async (req: Request, res: Response, next: NextFun
 
 // ── error handler ─────────────────────────────────────────────────────────────
 app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
+  // Check if circuit breaker is open
+  if (err.message.includes("breaker is open")) {
+    console.error("Circuit breaker is open");
+    return res.status(503).json({
+      error: "Service temporarily unavailable",
+      message: "RPC service is currently unavailable. Please try again later.",
+    });
+  }
+  
   console.error(err);
   res.status(500).json({ error: err.message });
 });
