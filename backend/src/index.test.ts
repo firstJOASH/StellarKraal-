@@ -1,6 +1,23 @@
 import request from "supertest";
 import app from "../src/index";
 
+// Mock the logger
+jest.mock("./utils/logger", () => ({
+  __esModule: true,
+  default: {
+    info: jest.fn(),
+    warn: jest.fn(),
+    error: jest.fn(),
+    debug: jest.fn(),
+  },
+  createRequestLogger: jest.fn(() => ({
+    info: jest.fn(),
+    warn: jest.fn(),
+    error: jest.fn(),
+    debug: jest.fn(),
+  })),
+}));
+
 // Mock stellar-sdk to avoid real network calls
 jest.mock("@stellar/stellar-sdk", () => {
   const actual = jest.requireActual("@stellar/stellar-sdk");
@@ -86,6 +103,16 @@ describe("StellarKraal API", () => {
       const res = await request(app).get("/api/health/1");
       expect(res.status).toBe(200);
       expect(res.body).toHaveProperty("health_factor");
+    });
+  });
+
+  describe("Request ID middleware", () => {
+    it("adds X-Request-ID header to response", async () => {
+      const res = await request(app).get("/api/loan/1");
+      expect(res.headers["x-request-id"]).toBeDefined();
+      expect(res.headers["x-request-id"]).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+      );
     });
   });
 });
