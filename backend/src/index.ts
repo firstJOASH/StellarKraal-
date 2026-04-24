@@ -1,4 +1,5 @@
-import "dotenv/config";
+import "./config"; // validate env at startup
+import { config } from "./config";
 import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import {
@@ -11,18 +12,25 @@ import {
   xdr,
 } from "@stellar/stellar-sdk";
 import { SorobanRpc } from "@stellar/stellar-sdk";
+import { globalLimiter, writeLimiter } from "./middleware/rateLimit";
+import {
+  registerWebhook,
+  getWebhooks,
+  getDeliveryLogs,
+  fireWebhooks,
+} from "./webhooks";
+
 const { Server } = SorobanRpc;
 
 const app = express();
 app.use(cors());
 app.use(express.json());
+app.use(globalLimiter);
 
-const RPC_URL = process.env.RPC_URL || "https://soroban-testnet.stellar.org";
-const CONTRACT_ID = process.env.CONTRACT_ID || "";
+const RPC_URL = config.RPC_URL;
+const CONTRACT_ID = config.CONTRACT_ID;
 const NETWORK_PASSPHRASE =
-  process.env.NEXT_PUBLIC_NETWORK === "mainnet"
-    ? Networks.PUBLIC
-    : Networks.TESTNET;
+  config.NEXT_PUBLIC_NETWORK === "mainnet" ? Networks.PUBLIC : Networks.TESTNET;
 
 const server = new Server(RPC_URL);
 
@@ -49,7 +57,7 @@ async function buildContractTx(
 // ── routes ────────────────────────────────────────────────────────────────────
 
 // POST /api/collateral/register
-app.post("/api/collateral/register", async (req: Request, res: Response, next: NextFunction) => {
+app.post("/api/collateral/register", writeLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { owner, animal_type, count, appraised_value } = req.body;
     const xdrTx = await buildContractTx(owner, "register_livestock", [
@@ -65,7 +73,7 @@ app.post("/api/collateral/register", async (req: Request, res: Response, next: N
 });
 
 // POST /api/loan/request
-app.post("/api/loan/request", async (req: Request, res: Response, next: NextFunction) => {
+app.post("/api/loan/request", writeLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { borrower, collateral_id, amount } = req.body;
     const xdrTx = await buildContractTx(borrower, "request_loan", [
@@ -74,13 +82,14 @@ app.post("/api/loan/request", async (req: Request, res: Response, next: NextFunc
       nativeToScVal(BigInt(amount), { type: "i128" }),
     ]);
     res.json({ xdr: xdrTx });
+    fireWebhooks("loan.requested", { borrower, collateral_id, amount });
   } catch (e) {
     next(e);
   }
 });
 
 // POST /api/loan/repay
-app.post("/api/loan/repay", async (req: Request, res: Response, next: NextFunction) => {
+app.post("/api/loan/repay", writeLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { borrower, loan_id, amount } = req.body;
     const xdrTx = await buildContractTx(borrower, "repay_loan", [
@@ -89,6 +98,7 @@ app.post("/api/loan/repay", async (req: Request, res: Response, next: NextFuncti
       nativeToScVal(BigInt(amount), { type: "i128" }),
     ]);
     res.json({ xdr: xdrTx });
+    fireWebhooks("loan.repaid", { borrower, loan_id, amount });
   } catch (e) {
     next(e);
   }
@@ -99,7 +109,7 @@ app.get("/api/loan/:id", async (req: Request, res: Response, next: NextFunction)
   try {
     const contract = new Contract(CONTRACT_ID);
     const account = await server.getAccount(
-      "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN" // fee-less read account
+      "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN"
     );
     const tx = new TransactionBuilder(account, {
       fee: BASE_FEE,
@@ -145,13 +155,35 @@ app.get("/api/health/:loanId", async (req: Request, res: Response, next: NextFun
   }
 });
 
+// ── webhook routes ────────────────────────────────────────────────────────────
+
+// POST /api/webhooks — register a webhook URL
+app.post("/api/webhooks", (req: Request, res: Response) => {
+  const { url } = req.body;
+  if (!url || typeof url !== "string") {
+    return res.status(400).json({ error: "url is required" });
+  }
+  const reg = registerWebhook(url);
+  res.status(201).json(reg);
+});
+
+// GET /api/admin/webhooks — list registered webhooks
+app.get("/api/admin/webhooks", (req: Request, res: Response) => {
+  res.json(getWebhooks());
+});
+
+// GET /api/admin/webhooks/logs — delivery logs
+app.get("/api/admin/webhooks/logs", (req: Request, res: Response) => {
+  res.json(getDeliveryLogs());
+});
+
 // ── error handler ─────────────────────────────────────────────────────────────
 app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
   console.error(err);
   res.status(500).json({ error: err.message });
 });
 
-const PORT = parseInt(process.env.PORT || "3001", 10);
+const PORT = parseInt(config.PORT, 10);
 app.listen(PORT, () => console.log(`StellarKraal API running on :${PORT}`));
 
 export default app;
