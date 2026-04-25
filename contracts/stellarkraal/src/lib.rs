@@ -10,8 +10,14 @@ use soroban_sdk::{
 const ADMIN: Symbol = symbol_short!("ADMIN");
 const ORACLE: Symbol = symbol_short!("ORACLE");
 const TOKEN: Symbol = symbol_short!("TOKEN");
-const LTV: Symbol = symbol_short!("LTV");        // loan-to-value bps  e.g. 6000 = 60%
-const LIQ_THR: Symbol = symbol_short!("LIQTHR"); // liquidation threshold bps e.g. 8000
+const LTV: Symbol = symbol_short!("LTV");
+const LIQ_THR: Symbol = symbol_short!("LIQTHR");
+const PAUSED: Symbol = symbol_short!("PAUSED");
+const PAUSE_EXP: Symbol = symbol_short!("PAUSEEXP");
+const PAUSE_DUR: Symbol = symbol_short!("PAUSEDUR");
+
+// Default pause duration: 72 hours in seconds
+const DEFAULT_PAUSE_DURATION: u64 = 72 * 3600;
 
 // ── Errors ───────────────────────────────────────────────────────────────────
 #[contracterror]
@@ -27,6 +33,8 @@ pub enum Error {
     HealthFactorSafe = 7,
     InvalidAmount = 8,
     LoanAlreadyClosed = 9,
+    ContractPaused = 10,
+    NotPaused = 11,
 }
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -42,9 +50,9 @@ pub enum LoanStatus {
 #[derive(Clone, Debug)]
 pub struct CollateralRecord {
     pub owner: Address,
-    pub animal_type: Symbol,  // "cattle" | "goat" | "sheep"
+    pub animal_type: Symbol,
     pub count: u32,
-    pub appraised_value: i128, // in stroops
+    pub appraised_value: i128,
     pub loan_id: u64,
 }
 
@@ -92,7 +100,65 @@ impl StellarKraal {
         env.storage().instance().set(&TOKEN, &token);
         env.storage().instance().set(&LTV, &ltv_bps);
         env.storage().instance().set(&LIQ_THR, &liquidation_threshold_bps);
+        env.storage().instance().set(&PAUSE_DUR, &DEFAULT_PAUSE_DURATION);
         Ok(())
+    }
+
+    // ── pause ─────────────────────────────────────────────────────────────
+    /// Pause all state-changing functions (except repayment).
+    /// Callable by admin. Auto-expires after configured duration (default 72h).
+    pub fn pause(env: Env, caller: Address) -> Result<(), Error> {
+        Self::assert_initialized(&env)?;
+        Self::assert_admin(&env, &caller)?;
+        caller.require_auth();
+
+        let now = env.ledger().timestamp();
+        let duration: u64 = env.storage().instance().get(&PAUSE_DUR).unwrap_or(DEFAULT_PAUSE_DURATION);
+        let expires_at = now + duration;
+
+        env.storage().instance().set(&PAUSED, &true);
+        env.storage().instance().set(&PAUSE_EXP, &expires_at);
+
+        env.events().publish(
+            (symbol_short!("Paused"),),
+            (caller, expires_at),
+        );
+        Ok(())
+    }
+
+    // ── unpause ───────────────────────────────────────────────────────────
+    /// Manually unpause before expiry. Callable by admin only.
+    pub fn unpause(env: Env, caller: Address) -> Result<(), Error> {
+        Self::assert_initialized(&env)?;
+        Self::assert_admin(&env, &caller)?;
+        caller.require_auth();
+
+        if !Self::is_paused_raw(&env) {
+            return Err(Error::NotPaused);
+        }
+
+        env.storage().instance().set(&PAUSED, &false);
+
+        env.events().publish(
+            (symbol_short!("Unpaused"),),
+            (caller,),
+        );
+        Ok(())
+    }
+
+    // ── set_pause_duration ────────────────────────────────────────────────
+    /// Configure the auto-unpause duration (in seconds). Admin only.
+    pub fn set_pause_duration(env: Env, caller: Address, duration_secs: u64) -> Result<(), Error> {
+        Self::assert_initialized(&env)?;
+        Self::assert_admin(&env, &caller)?;
+        caller.require_auth();
+        env.storage().instance().set(&PAUSE_DUR, &duration_secs);
+        Ok(())
+    }
+
+    // ── is_paused ─────────────────────────────────────────────────────────
+    pub fn is_paused(env: Env) -> bool {
+        Self::is_paused_raw(&env)
     }
 
     // ── register_livestock ────────────────────────────────────────────────
@@ -104,6 +170,7 @@ impl StellarKraal {
         appraised_value: i128,
     ) -> Result<u64, Error> {
         Self::assert_initialized(&env)?;
+        Self::assert_not_paused(&env)?;
         if appraised_value <= 0 || count == 0 {
             return Err(Error::InvalidAmount);
         }
@@ -129,6 +196,7 @@ impl StellarKraal {
         amount: i128,
     ) -> Result<u64, Error> {
         Self::assert_initialized(&env)?;
+        Self::assert_not_paused(&env)?;
         if amount <= 0 {
             return Err(Error::InvalidAmount);
         }
@@ -165,12 +233,10 @@ impl StellarKraal {
         };
         env.storage().persistent().set(&DataKey::Loan(loan_id), &loan);
 
-        // Mark collateral as used
         let mut col = collateral;
         col.loan_id = loan_id;
         env.storage().persistent().set(&DataKey::Collateral(collateral_id), &col);
 
-        // Disburse tokens
         let token_addr: Address = env.storage().instance().get(&TOKEN).unwrap();
         let token_client = token::Client::new(&env, &token_addr);
         token_client.transfer(&env.current_contract_address(), &borrower, &amount);
@@ -179,8 +245,10 @@ impl StellarKraal {
     }
 
     // ── repay_loan ────────────────────────────────────────────────────────
+    /// Repayment is allowed even when paused (per spec).
     pub fn repay_loan(env: Env, borrower: Address, loan_id: u64, amount: i128) -> Result<(), Error> {
         Self::assert_initialized(&env)?;
+        // NOTE: repayment intentionally NOT blocked by pause
         if amount <= 0 {
             return Err(Error::InvalidAmount);
         }
@@ -215,6 +283,7 @@ impl StellarKraal {
     // ── liquidate ─────────────────────────────────────────────────────────
     pub fn liquidate(env: Env, liquidator: Address, loan_id: u64) -> Result<(), Error> {
         Self::assert_initialized(&env)?;
+        Self::assert_not_paused(&env)?;
         liquidator.require_auth();
 
         let mut loan: LoanRecord = env
@@ -232,7 +301,6 @@ impl StellarKraal {
             return Err(Error::HealthFactorSafe);
         }
 
-        // Transfer outstanding debt from liquidator to contract
         let token_addr: Address = env.storage().instance().get(&TOKEN).unwrap();
         let token_client = token::Client::new(&env, &token_addr);
         token_client.transfer(&liquidator, &env.current_contract_address(), &loan.outstanding);
@@ -244,7 +312,6 @@ impl StellarKraal {
     }
 
     // ── health_factor ─────────────────────────────────────────────────────
-    /// Returns health factor in bps (10_000 = 1.0). Below 10_000 = liquidatable.
     pub fn health_factor(env: Env, loan_id: u64) -> Result<i128, Error> {
         Self::assert_initialized(&env)?;
         let loan: LoanRecord = env
@@ -279,6 +346,32 @@ impl StellarKraal {
         Ok(())
     }
 
+    fn assert_admin(env: &Env, caller: &Address) -> Result<(), Error> {
+        let admin: Address = env.storage().instance().get(&ADMIN).unwrap();
+        if *caller != admin {
+            return Err(Error::Unauthorized);
+        }
+        Ok(())
+    }
+
+    fn is_paused_raw(env: &Env) -> bool {
+        let paused: bool = env.storage().instance().get(&PAUSED).unwrap_or(false);
+        if !paused {
+            return false;
+        }
+        // Check auto-expiry
+        let expires_at: u64 = env.storage().instance().get(&PAUSE_EXP).unwrap_or(0);
+        let now = env.ledger().timestamp();
+        now < expires_at
+    }
+
+    fn assert_not_paused(env: &Env) -> Result<(), Error> {
+        if Self::is_paused_raw(env) {
+            return Err(Error::ContractPaused);
+        }
+        Ok(())
+    }
+
     fn next_id(env: &Env, key: DataKey) -> u64 {
         let id: u64 = env.storage().instance().get(&key).unwrap_or(0u64);
         let next = id + 1;
@@ -297,7 +390,6 @@ impl StellarKraal {
             .ok_or(Error::CollateralNotFound)?;
 
         let liq_thr: u32 = env.storage().instance().get(&LIQ_THR).unwrap();
-        // health = (collateral_value * liq_threshold) / (outstanding * 10_000)
         let numerator = collateral
             .appraised_value
             .checked_mul(liq_thr as i128)
