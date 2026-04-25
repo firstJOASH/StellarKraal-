@@ -12,6 +12,7 @@ import {
 } from "@stellar/stellar-sdk";
 import { SorobanRpc } from "@stellar/stellar-sdk";
 import logger, { createRequestLogger } from "./utils/logger";
+import { auditMiddleware } from "./middleware/audit";
 import { randomUUID } from "crypto";
 const { Server } = SorobanRpc;
 
@@ -37,6 +38,9 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   });
   next();
 });
+
+// Audit logging middleware — logs all requests with redacted body to audit log
+app.use(auditMiddleware);
 
 const RPC_URL = process.env.RPC_URL || "https://soroban-testnet.stellar.org";
 const CONTRACT_ID = process.env.CONTRACT_ID || "";
