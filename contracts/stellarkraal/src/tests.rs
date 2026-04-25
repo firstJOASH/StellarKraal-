@@ -378,7 +378,9 @@ mod tests {
             assert_eq!(loan.borrower, borrower);
             // Invariant 9: Collateral ID matches
             assert_eq!(loan.collateral_id, col_id);
-            // Invariant 10: Initial outstanding == principal
+            // Invariant 10: Packed collateral value matches
+            assert_eq!(loan.collateral_value, val);
+            // Invariant 11: Initial outstanding == principal
             assert_eq!(loan.outstanding, loan.principal);
         }
     }
