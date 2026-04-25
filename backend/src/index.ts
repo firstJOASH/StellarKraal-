@@ -18,6 +18,7 @@ import { auditMiddleware } from "./middleware/audit";
 import { timeoutMiddleware } from "./middleware/timeout";
 import { getAppraisal, setAppraisal, invalidateAll, configureCacheTTL } from "./utils/appraisalCache";
 import { randomUUID } from "crypto";
+import { v1Router } from "./routes/v1";
 const { Server } = SorobanRpc;
 
 const app = express();
@@ -70,6 +71,29 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 
 // Audit logging middleware — logs all requests with redacted body to audit log
 app.use(auditMiddleware);
+
+// ── API v1 router ─────────────────────────────────────────────────────────────
+app.use("/api/v1", v1Router);
+
+// Redirect unversioned /api/* routes to /api/v1/* with deprecation warning
+const UNVERSIONED_PATHS = [
+  "/collateral/register",
+  "/loan/request",
+  "/loan/repay",
+  "/loan/:id",
+  "/health/:loanId",
+  "/oracle/price-update",
+  "/webhooks",
+  "/admin/webhooks",
+  "/admin/webhooks/logs",
+];
+for (const p of UNVERSIONED_PATHS) {
+  app.all(`/api${p}`, (req: Request, res: Response) => {
+    res.setHeader("Deprecation", "true");
+    res.setHeader("Link", `</api/v1${req.path.replace(/^\/api/, "")}>; rel="successor-version"`);
+    res.redirect(301, `/api/v1${req.path.replace(/^\/api/, "")}`);
+  });
+}
 
 const RPC_URL = process.env.RPC_URL || "https://soroban-testnet.stellar.org";
 const CONTRACT_ID = process.env.CONTRACT_ID || "";
