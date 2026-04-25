@@ -6,7 +6,9 @@
     "dev": "ts-node-dev --respawn src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "test": "jest --forceExit"
+    "test": "jest --forceExit",
+    "test:integration": "jest --forceExit --testPathPattern=integration",
+    "test:coverage": "jest --forceExit --coverage"
   },
   "dependencies": {
     "@stellar/stellar-sdk": "^12.0.0",
@@ -33,6 +35,19 @@
     "testEnvironment": "node",
     "testMatch": [
       "**/*.test.ts"
+    ],
+    "coverageThreshold": {
+      "global": {
+        "lines": 80,
+        "functions": 80,
+        "branches": 80,
+        "statements": 80
+      }
+    },
+    "collectCoverageFrom": [
+      "src/**/*.ts",
+      "!src/**/*.test.ts",
+      "!src/**/*.d.ts"
     ]
   }
 }
