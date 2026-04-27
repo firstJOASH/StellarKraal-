@@ -27,6 +27,7 @@ export default function CollateralCard({ walletAddress }: Props) {
       <h2 className="text-xl font-semibold text-brown mb-3">Loan Lookup</h2>
       <div className="flex gap-2">
         <input
+          aria-label="Loan ID"
           className="border border-brown/30 rounded-lg px-3 py-2 flex-1"
           placeholder="Loan ID"
           value={collateralId}

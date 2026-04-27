@@ -60,6 +60,7 @@ export default function RepayPanel({
       <h2 className="text-xl font-semibold text-brown mb-3">Repay Loan</h2>
       <div className="space-y-3">
         <input
+          aria-label="Loan ID"
           className="w-full border border-brown/30 rounded-lg px-3 py-2"
           placeholder="Loan ID"
           value={loanId}
@@ -67,6 +68,7 @@ export default function RepayPanel({
           type="number"
         />
         <input
+          aria-label="Repayment amount in stroops"
           className="w-full border border-brown/30 rounded-lg px-3 py-2"
           placeholder="Amount (stroops)"
           value={amount}
