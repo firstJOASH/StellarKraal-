@@ -26,3 +26,16 @@ variable "backup_retention_days" {
   type        = "number"
   default     = 30
 }
+
+variable "allowed_ips" {
+  description = "List of IP addresses allowed to access the staging environment"
+  type        = list(string)
+  default     = ["0.0.0.0/0"] # Default to all, but will be overridden in staging
+}
+
+variable "slack_webhook_url" {
+  description = "Slack webhook URL for deployment notifications"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
