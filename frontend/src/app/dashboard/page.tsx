@@ -12,22 +12,15 @@ export default function Dashboard() {
   const router = useRouter();
   const [wallet, setWallet] = useState<string | null>(null);
   const [loanId, setLoanId] = useState("");
-  const [healthFactor, setHealthFactor] = useState<number | null>(null);
+  const [activeLoanId, setActiveLoanId] = useState("");
   const [repayLoanId, setRepayLoanId] = useState("");
   const [repayAmount, setRepayAmount] = useState("");
+
+  const { healthFactor, loading, lastUpdated, refresh } = useHealthFactor(activeLoanId);
 
   function handleProceedToRepay(nextLoanId: string, nextAmount: string) {
     setRepayLoanId(nextLoanId);
     setRepayAmount(nextAmount);
-  }
-
-  async function fetchHealth() {
-    if (!loanId) return;
-    const res = await fetch(
-      `${process.env.NEXT_PUBLIC_API_URL}/api/health/${loanId}`,
-    );
-    const data = await res.json();
-    setHealthFactor(Number(data.health_factor ?? 0));
   }
 
   return (
@@ -62,13 +55,20 @@ export default function Dashboard() {
                 onChange={(e) => setLoanId(e.target.value)}
               />
               <button
-                onClick={fetchHealth}
+                onClick={() => setActiveLoanId(loanId)}
                 className="bg-gold text-brown font-semibold px-4 py-2 rounded-lg hover:bg-gold/80 transition"
               >
                 Check
               </button>
             </div>
-            {healthFactor !== null && <HealthGauge value={healthFactor} />}
+            {healthFactor !== null && (
+              <HealthGauge
+                value={healthFactor}
+                loading={loading}
+                lastUpdated={lastUpdated}
+                onRefresh={refresh}
+              />
+            )}
           </div>
           <div className="mt-8">
             <TransactionHistory />
