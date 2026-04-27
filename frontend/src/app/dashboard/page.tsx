@@ -33,6 +33,20 @@ export default function Dashboard() {
       <WalletConnect onConnect={setWallet} />
       {wallet && (
         <>
+          <div className="grid grid-cols-2 gap-4 mb-6">
+            <a
+              href="/dashboard/collateral"
+              className="bg-brown text-cream px-4 py-3 rounded-xl font-semibold hover:bg-brown/80 transition text-center"
+            >
+              View Collateral
+            </a>
+            <a
+              href="/borrow"
+              className="bg-gold text-brown px-4 py-3 rounded-xl font-semibold hover:bg-gold/80 transition text-center"
+            >
+              Register New
+            </a>
+          </div>
           <CollateralCard walletAddress={wallet} />
           <LoanRepaymentCalculator onProceed={handleProceedToRepay} />
           <RepayPanel

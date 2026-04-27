@@ -281,4 +281,77 @@ v1Router.get("/admin/webhooks/logs", (_req: Request, res: Response) => {
   res.json(getDeliveryLogs());
 });
 
+// GET /collateral/list
+v1Router.get("/collateral/list", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const owner = req.query.owner as string;
+    if (!owner) {
+      return res.status(400).json({ error: "owner query parameter is required" });
+    }
+    const contract = new Contract(CONTRACT_ID);
+    const account = await rpcClient.getAccount(
+      "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN"
+    );
+    const tx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: NETWORK_PASSPHRASE,
+    })
+      .addOperation(contract.call("list_collateral", new Address(owner).toScVal()))
+      .setTimeout(30)
+      .build();
+    const result = await rpcClient.simulateTransaction(tx);
+    const collaterals = (result as any).result?.retval || [];
+    res.json({ collaterals });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /collateral/:id
+v1Router.get("/collateral/:id", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const owner = req.query.owner as string;
+    if (!owner) {
+      return res.status(400).json({ error: "owner query parameter is required" });
+    }
+    const contract = new Contract(CONTRACT_ID);
+    const account = await rpcClient.getAccount(
+      "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN"
+    );
+    const tx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: NETWORK_PASSPHRASE,
+    })
+      .addOperation(
+        contract.call(
+          "get_collateral",
+          nativeToScVal(BigInt(req.params.id), { type: "u64" }),
+          new Address(owner).toScVal()
+        )
+      )
+      .setTimeout(30)
+      .build();
+    const result = await rpcClient.simulateTransaction(tx);
+    const collateral = (result as any).result?.retval;
+    const loansRes = await rpcClient.simulateTransaction(
+      new TransactionBuilder(account, {
+        fee: BASE_FEE,
+        networkPassphrase: NETWORK_PASSPHRASE,
+      })
+        .addOperation(
+          contract.call(
+            "list_loans_for_collateral",
+            nativeToScVal(BigInt(req.params.id), { type: "u64" })
+          )
+        )
+        .setTimeout(30)
+        .build()
+    );
+    const loans = (loansRes as any).result?.retval || [];
+    res.json({ collateral, loans });
+  } catch (err) {
+    next(err);
+  }
+});
+
 export { v1Router, startTime, APP_VERSION };
