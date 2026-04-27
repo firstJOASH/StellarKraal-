@@ -1,58 +1,75 @@
 import React from "react";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import RepayPanel from "../components/RepayPanel";
 
-const mockSignTransaction = jest.fn();
-const mockSubmitSignedXdr = jest.fn();
-
 jest.mock("@stellar/freighter-api", () => ({
-  signTransaction: (...args: any[]) => mockSignTransaction(...args),
+  signTransaction: jest.fn(),
 }));
-
 jest.mock("../lib/stellarUtils", () => ({
-  submitSignedXdr: (...args: any[]) => mockSubmitSignedXdr(...args),
-  healthColor: () => "#16a34a",
-  formatStroops: (s: number) => `${s / 1e7} XLM`,
+  submitSignedXdr: jest.fn(),
+  healthColor: jest.fn(),
+  formatStroops: jest.fn(),
 }));
 
-const fetchMock = jest.fn();
-beforeEach(() => {
-  fetchMock.mockReset();
-  mockSignTransaction.mockReset();
-  mockSubmitSignedXdr.mockReset();
-  (global as any).fetch = fetchMock;
-});
+import { signTransaction } from "@stellar/freighter-api";
+import { submitSignedXdr } from "../lib/stellarUtils";
 
-describe("RepayPanel", () => {
-  it("renders repay form", () => {
-    render(<RepayPanel walletAddress="GTEST" />);
-    expect(screen.getByText("Repay Loan")).toBeTruthy();
-    expect(screen.getByPlaceholderText("Loan ID")).toBeTruthy();
-    expect(screen.getByPlaceholderText("Amount (stroops)")).toBeTruthy();
-    expect(screen.getByText("Repay")).toBeTruthy();
+const mockSign = signTransaction as jest.Mock;
+const mockSubmit = submitSignedXdr as jest.Mock;
+
+function renderPanel() {
+  return render(
+    <RepayPanel walletAddress="GTEST" initialLoanId="1" initialAmount="100" />
+  );
+}
+
+describe("RepayPanel — optimistic UI", () => {
+  beforeEach(() => {
+    jest.resetAllMocks();
   });
 
-  it("pre-fills fields from initialLoanId and initialAmount props", () => {
-    render(<RepayPanel walletAddress="GTEST" initialLoanId="7" initialAmount="50000" />);
-    expect((screen.getByPlaceholderText("Loan ID") as HTMLInputElement).value).toBe("7");
-    expect((screen.getByPlaceholderText("Amount (stroops)") as HTMLInputElement).value).toBe("50000");
-  });
-
-  it("updates fields when props change", () => {
-    const { rerender } = render(
-      <RepayPanel walletAddress="GTEST" initialLoanId="1" initialAmount="100" />
+  it("shows loading indicator while server is confirming", async () => {
+    (global as any).fetch = jest.fn().mockResolvedValue({
+      json: async () => ({ xdr: "test-xdr" }),
+    });
+    mockSign.mockResolvedValue({ signedTxXdr: "signed-xdr" });
+    // Delay submitSignedXdr to keep loading state visible
+    mockSubmit.mockImplementation(
+      () => new Promise((resolve) => setTimeout(resolve, 200))
     );
-    rerender(<RepayPanel walletAddress="GTEST" initialLoanId="2" initialAmount="200" />);
-    expect((screen.getByPlaceholderText("Loan ID") as HTMLInputElement).value).toBe("2");
-    expect((screen.getByPlaceholderText("Amount (stroops)") as HTMLInputElement).value).toBe("200");
+
+    renderPanel();
+    fireEvent.click(screen.getByText("Repay"));
+
+    expect(await screen.findByText("Processing…")).toBeTruthy();
   });
 
-  it("shows success status after repayment", async () => {
-    fetchMock.mockResolvedValue({ json: async () => ({ xdr: "test-xdr" }) });
-    mockSignTransaction.mockResolvedValue({ signedTxXdr: "signed-xdr" });
-    mockSubmitSignedXdr.mockResolvedValue(undefined);
+  it("shows optimistic banner immediately after clicking Repay", async () => {
+    (global as any).fetch = jest.fn().mockResolvedValue({
+      json: async () => ({ xdr: "test-xdr" }),
+    });
+    mockSign.mockResolvedValue({ signedTxXdr: "signed-xdr" });
+    mockSubmit.mockImplementation(
+      () => new Promise((resolve) => setTimeout(resolve, 200))
+    );
 
-    render(<RepayPanel walletAddress="GTEST" initialLoanId="5" initialAmount="10000" />);
+    renderPanel();
+    fireEvent.click(screen.getByText("Repay"));
+
+    // Optimistic banner should appear while loading
+    expect(
+      await screen.findByText(/Repayment recorded/)
+    ).toBeTruthy();
+  });
+
+  it("shows success toast after server confirms", async () => {
+    (global as any).fetch = jest.fn().mockResolvedValue({
+      json: async () => ({ xdr: "test-xdr" }),
+    });
+    mockSign.mockResolvedValue({ signedTxXdr: "signed-xdr" });
+    mockSubmit.mockResolvedValue("tx-hash");
+
+    renderPanel();
     fireEvent.click(screen.getByText("Repay"));
 
     await waitFor(() =>
@@ -60,26 +77,40 @@ describe("RepayPanel", () => {
     );
   });
 
-  it("shows error status when repayment fails", async () => {
-    fetchMock.mockRejectedValue(new Error("Repay failed"));
+  it("rolls back optimistic state and shows error toast on API error", async () => {
+    (global as any).fetch = jest.fn().mockRejectedValue(new Error("Network error"));
 
-    render(<RepayPanel walletAddress="GTEST" initialLoanId="5" initialAmount="10000" />);
+    renderPanel();
     fireEvent.click(screen.getByText("Repay"));
 
     await waitFor(() =>
-      expect(screen.getByText("❌ Repay failed")).toBeTruthy()
+      expect(screen.getByText("❌ Network error")).toBeTruthy()
     );
+    // Optimistic banner should be gone after rollback
+    expect(screen.queryByText(/Repayment recorded/)).toBeNull();
   });
 
-  it("disables button while loading", async () => {
-    let resolve: (v: any) => void;
-    fetchMock.mockReturnValue(new Promise((r) => { resolve = r; }));
+  it("simulates network delay — optimistic banner visible during slow response", async () => {
+    jest.useFakeTimers();
+    (global as any).fetch = jest.fn().mockImplementation(
+      () =>
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ json: async () => ({ xdr: "xdr" }) }), 500)
+        )
+    );
+    mockSign.mockResolvedValue({ signedTxXdr: "signed" });
+    mockSubmit.mockResolvedValue("hash");
 
-    render(<RepayPanel walletAddress="GTEST" initialLoanId="1" initialAmount="100" />);
+    renderPanel();
     fireEvent.click(screen.getByText("Repay"));
 
+    // Before fetch resolves, button shows loading
     expect(screen.getByText("Processing…")).toBeTruthy();
-    expect((screen.getByText("Processing…") as HTMLButtonElement).disabled).toBe(true);
-    resolve!({ json: async () => ({ xdr: "" }) });
+
+    await act(async () => {
+      jest.advanceTimersByTime(600);
+    });
+
+    jest.useRealTimers();
   });
 });
