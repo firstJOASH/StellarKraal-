@@ -1,7 +1,10 @@
 /**
  * Lightweight in-memory store with soft delete support.
  * Provides audit trail for loans and collateral records.
- * Migration: adds deletedAt timestamp to all records.
+ * Migration system is managed by db-migrate for schema versioning.
+ * 
+ * Note: This is an in-memory implementation for development.
+ * In production, replace with actual database queries.
  */
 
 export interface CollateralRecord {
@@ -97,17 +100,6 @@ export function listDeletedLoans(): LoanRecord[] {
   return [...loanTable.values()].filter((r) => r.deletedAt !== null);
 }
 
-// ── Migration helper (documents schema intent) ────────────────────────────────
+// ── Migration exports ─────────────────────────────────────────────────────────
 
-/**
- * Migration 001: Add deletedAt column to loans and collateral tables.
- * For a real DB this would be a SQL migration script.
- * Schema:
- *   ALTER TABLE collateral ADD COLUMN deletedAt TEXT DEFAULT NULL;
- *   ALTER TABLE loans      ADD COLUMN deletedAt TEXT DEFAULT NULL;
- *   CREATE INDEX idx_collateral_deleted ON collateral(deletedAt);
- *   CREATE INDEX idx_loans_deleted      ON loans(deletedAt);
- */
-export function runMigrations(): void {
-  // No-op for in-memory store; documents intent for real DB migration
-}
+export { runMigrations, getMigrationStatus, rollbackMigration } from "./migrationRunner";
