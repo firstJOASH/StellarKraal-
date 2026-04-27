@@ -5,6 +5,8 @@ import CollateralCard from "@/components/CollateralCard";
 import RepayPanel from "@/components/RepayPanel";
 import HealthGauge from "@/components/HealthGauge";
 import LoanRepaymentCalculator from "@/components/LoanRepaymentCalculator";
+import SkeletonHealthDashboard from "@/components/SkeletonHealthDashboard";
+import { useMinLoadingTime } from "@/hooks/useMinLoadingTime";
 
 export default function Dashboard() {
   const [wallet, setWallet] = useState<string | null>(null);
@@ -12,6 +14,7 @@ export default function Dashboard() {
   const [healthFactor, setHealthFactor] = useState<number | null>(null);
   const [repayLoanId, setRepayLoanId] = useState("");
   const [repayAmount, setRepayAmount] = useState("");
+  const [isHealthLoading, withMinLoading] = useMinLoadingTime();
 
   function handleProceedToRepay(nextLoanId: string, nextAmount: string) {
     setRepayLoanId(nextLoanId);
@@ -20,11 +23,13 @@ export default function Dashboard() {
 
   async function fetchHealth() {
     if (!loanId) return;
-    const res = await fetch(
-      `${process.env.NEXT_PUBLIC_API_URL}/api/health/${loanId}`,
-    );
-    const data = await res.json();
-    setHealthFactor(Number(data.health_factor ?? 0));
+    await withMinLoading(async () => {
+      const res = await fetch(
+        `${process.env.NEXT_PUBLIC_API_URL}/api/health/${loanId}`,
+      );
+      const data = await res.json();
+      setHealthFactor(Number(data.health_factor ?? 0));
+    });
   }
 
   return (
@@ -40,26 +45,30 @@ export default function Dashboard() {
             initialLoanId={repayLoanId}
             initialAmount={repayAmount}
           />
-          <div className="mt-8 bg-white rounded-2xl p-6 shadow">
-            <h2 className="text-xl font-semibold text-brown mb-3">
-              Health Factor
-            </h2>
-            <div className="flex gap-2 items-center">
-              <input
-                className="border border-brown/30 rounded-lg px-3 py-2 flex-1"
-                placeholder="Loan ID"
-                value={loanId}
-                onChange={(e) => setLoanId(e.target.value)}
-              />
-              <button
-                onClick={fetchHealth}
-                className="bg-gold text-brown font-semibold px-4 py-2 rounded-lg hover:bg-gold/80 transition"
-              >
-                Check
-              </button>
+          {isHealthLoading ? (
+            <SkeletonHealthDashboard />
+          ) : (
+            <div className="mt-8 bg-white rounded-2xl p-6 shadow">
+              <h2 className="text-xl font-semibold text-brown mb-3">
+                Health Factor
+              </h2>
+              <div className="flex gap-2 items-center">
+                <input
+                  className="border border-brown/30 rounded-lg px-3 py-2 flex-1"
+                  placeholder="Loan ID"
+                  value={loanId}
+                  onChange={(e) => setLoanId(e.target.value)}
+                />
+                <button
+                  onClick={fetchHealth}
+                  className="bg-gold text-brown font-semibold px-4 py-2 rounded-lg hover:bg-gold/80 transition"
+                >
+                  Check
+                </button>
+              </div>
+              {healthFactor !== null && <HealthGauge value={healthFactor} />}
             </div>
-            {healthFactor !== null && <HealthGauge value={healthFactor} />}
-          </div>
+          )}
         </>
       )}
     </main>
