@@ -124,6 +124,25 @@ app.use(auditMiddleware);
 app.use("/api/auth", authRouter);
 app.use(jwtMiddleware);
 
+// ── API Versioning ────────────────────────────────────────────────────────────
+import { v1Router } from "./routes/v1";
+
+// Mount v1 routes
+app.use("/api/v1", v1Router);
+
+// Redirect unversioned routes to v1 with deprecation warning
+app.use("/api/:endpoint(*)", (req: Request, res: Response, next: NextFunction) => {
+  // Skip if already versioned or is auth/health
+  if (req.path.startsWith("/api/v1") || req.path === "/api/health" || req.path.startsWith("/api/auth")) {
+    return next();
+  }
+  
+  const newPath = req.path.replace(/^\/api/, "/api/v1");
+  res.setHeader("Deprecation", "true");
+  res.setHeader("Warning", '299 - "Unversioned API routes are deprecated. Use /api/v1/ prefix."');
+  res.redirect(301, newPath + (req.url.includes("?") ? req.url.substring(req.url.indexOf("?")) : ""));
+});
+
 const RPC_URL = process.env.RPC_URL || "https://soroban-testnet.stellar.org";
 const CONTRACT_ID = process.env.CONTRACT_ID || "";
 const NETWORK_PASSPHRASE =
