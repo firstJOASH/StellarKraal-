@@ -38,6 +38,16 @@ describe("registerWebhook", () => {
     const reg = registerWebhook(WEBHOOK_URL);
     expect(getWebhooks().some((w) => w.id === reg.id)).toBe(true);
   });
+
+  it("throws on an invalid URL", () => {
+    expect(() => registerWebhook("not-a-url")).toThrow("Invalid webhook URL");
+  });
+
+  it("throws on a non-http/https URL", () => {
+    expect(() => registerWebhook("ftp://example.com/hook")).toThrow(
+      "Webhook URL must use http or https"
+    );
+  });
 });
 
 // ── delivery logs ─────────────────────────────────────────────────────────────

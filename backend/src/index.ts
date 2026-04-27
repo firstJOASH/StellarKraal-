@@ -594,8 +594,11 @@ app.post(
     if (!url || typeof url !== "string") {
       return res.status(400).json({ error: "url is required" });
     }
-    const reg = registerWebhook(url);
-    res.status(201).json(reg);
+    try {
+      return res.status(201).json(registerWebhook(url));
+    } catch (err: any) {
+      return res.status(400).json({ error: err.message });
+    }
   },
 );
 

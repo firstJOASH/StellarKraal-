@@ -270,7 +270,11 @@ v1Router.post(
     if (!url || typeof url !== "string") {
       return res.status(400).json({ error: "url is required" });
     }
-    res.status(201).json(registerWebhook(url));
+    try {
+      return res.status(201).json(registerWebhook(url));
+    } catch (err: any) {
+      return res.status(400).json({ error: err.message });
+    }
   }
 );
 
