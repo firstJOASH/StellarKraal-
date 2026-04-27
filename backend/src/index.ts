@@ -15,6 +15,12 @@ import {
   softDeleteLoan,
   restoreLoan,
   listDeletedLoans,
+  insertTransaction,
+  listTransactions,
+  getTransaction,
+  updateTransaction,
+  type TransactionType,
+  type TransactionStatus,
 } from "./db/store";
 import { corsMiddleware } from "./middleware/cors";
 import {
@@ -45,8 +51,30 @@ import { globalLimiter } from "./middleware/rateLimit";
 import { asyncHandler } from "./utils/asyncHandler";
 import { stellarPublicKeySchema } from "./validators/stellar";
 import rpcClient from "./utils/rpcClient";
-import { registerWebhook, getWebhooks, getDeliveryLogs, fireWebhooks } from "./webhooks";
+import { registerWebhook, getWebhooks, getDeliveryLogs } from "./webhooks";
+import { fireAlert } from "./utils/alerting";
+import { rules } from "./utils/alertRules";
 const { Server } = SorobanRpc;
+
+// ── 5xx spike tracking (rolling 60s window) ───────────────────────────────────
+const fivexxTimestamps: number[] = [];
+const FIVEXX_WINDOW_MS = 60_000;
+const FIVEXX_THRESHOLD = 10;
+
+function track5xx() {
+  const now = Date.now();
+  fivexxTimestamps.push(now);
+  // evict old entries
+  while (fivexxTimestamps.length && fivexxTimestamps[0] < now - FIVEXX_WINDOW_MS) {
+    fivexxTimestamps.shift();
+  }
+  if (fivexxTimestamps.length >= FIVEXX_THRESHOLD) {
+    fireAlert(rules.fivexxSpike, `${fivexxTimestamps.length} 5xx errors in the last 60s`, {
+      count: fivexxTimestamps.length,
+      window: "60s",
+    });
+  }
+}
 
 // ── Idempotency cache (in-memory, 24h TTL) ───────────────────────────────────
 interface IdempotencyEntry {
@@ -693,10 +721,65 @@ app.delete("/api/loan/:id", (req: Request, res: Response) => {
   res.json({ deleted: true, id: req.params.id });
 });
 
+// GET /api/transactions — transaction history with filtering, sorting, and pagination
+app.get(
+  "/api/transactions",
+  asyncHandler(async (req: Request, res: Response) => {
+    const borrower = req.query.borrower as string | undefined;
+    const type = req.query.type as TransactionType | undefined;
+    const status = req.query.status as TransactionStatus | undefined;
+    const startDate = req.query.startDate as string | undefined;
+    const endDate = req.query.endDate as string | undefined;
+    const pageRaw = req.query.page !== undefined ? Number(req.query.page) : 1;
+    const pageSizeRaw = req.query.pageSize !== undefined ? Number(req.query.pageSize) : 20;
+
+    if (!Number.isInteger(pageRaw) || pageRaw < 1) {
+      return res.status(400).json({ error: "page must be a positive integer" });
+    }
+    if (!Number.isInteger(pageSizeRaw) || pageSizeRaw < 1 || pageSizeRaw > 100) {
+      return res.status(400).json({ error: "pageSize must be between 1 and 100" });
+    }
+
+    // Validate date range if provided
+    if (startDate && isNaN(new Date(startDate).getTime())) {
+      return res.status(400).json({ error: "startDate must be a valid ISO date" });
+    }
+    if (endDate && isNaN(new Date(endDate).getTime())) {
+      return res.status(400).json({ error: "endDate must be a valid ISO date" });
+    }
+
+    const result = listTransactions({
+      borrower,
+      type,
+      status,
+      startDate,
+      endDate,
+      page: pageRaw,
+      pageSize: pageSizeRaw,
+    });
+
+    res.json(result);
+  }),
+);
+
+// GET /api/transactions/:id — get transaction details
+app.get(
+  "/api/transactions/:id",
+  asyncHandler(async (req: Request, res: Response) => {
+    const transaction = getTransaction(req.params.id);
+    if (!transaction) {
+      return res.status(404).json({ error: "Transaction not found" });
+    }
+    res.json(transaction);
+  }),
+);
+
 // ── error handler ─────────────────────────────────────────────────────────────
 app.use((err: Error, req: Request, res: Response, _next: NextFunction) => {
   const reqLogger = (req as any).logger || logger;
   if (err instanceof PoolExhaustedError) {
+    track5xx();
+    fireAlert(rules.dbError, "Connection pool exhausted", { path: req.path });
     return res
       .status(503)
       .json({ error: "Service unavailable: connection pool exhausted" });
@@ -705,6 +788,7 @@ app.use((err: Error, req: Request, res: Response, _next: NextFunction) => {
     error: err.message,
     stack: err.stack,
   });
+  track5xx();
   res.status(500).json({ error: err.message });
 });
 
@@ -715,7 +799,7 @@ const httpServer = app.listen(PORT, () => {
     environment: process.env.NODE_ENV || "development",
     logLevel: process.env.LOG_LEVEL || "info",
   });
-});
+}
 
 // ── Graceful Shutdown ─────────────────────────────────────────────────────────
 
