@@ -686,12 +686,14 @@ app.use((err: Error, req: Request, res: Response, _next: NextFunction) => {
 });
 
 const PORT = parseInt(process.env.PORT || "3001", 10);
-app.listen(PORT, () => {
-  logger.info(`StellarKraal API running on port ${PORT}`, {
-    port: PORT,
-    environment: process.env.NODE_ENV || "development",
-    logLevel: process.env.LOG_LEVEL || "info",
+if (require.main === module) {
+  app.listen(PORT, () => {
+    logger.info(`StellarKraal API running on port ${PORT}`, {
+      port: PORT,
+      environment: process.env.NODE_ENV || "development",
+      logLevel: process.env.LOG_LEVEL || "info",
+    });
   });
-});
+}
 
 export default app;
