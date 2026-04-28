@@ -23,6 +23,12 @@ const BASE_RATE: Symbol = symbol_short!("BASERT"); // base interest rate bps
 const SLOPE1: Symbol = symbol_short!("SLP1");    // slope below kink bps
 const SLOPE2: Symbol = symbol_short!("SLP2");    // slope above kink bps
 const KINK: Symbol = symbol_short!("KINK");      // utilization kink point bps
+const TWAP_WINDOW: Symbol = symbol_short!("TWAPWIN"); // TWAP window in seconds (default 1 hour)
+const LAST_PRICE: Symbol = symbol_short!("LSTPRC"); // last oracle price
+const LAST_PRICE_TIME: Symbol = symbol_short!("LSTTIM"); // timestamp of last price update
+const TWAP_PRICE: Symbol = symbol_short!("TWAPPRC"); // current TWAP price
+const TWAP_SUM: Symbol = symbol_short!("TWAPSUM"); // sum of prices for TWAP calculation
+const TWAP_COUNT: Symbol = symbol_short!("TWAPCT"); // count of prices in TWAP window
 
 // ── Errors ───────────────────────────────────────────────────────────────────
 #[contracterror]
@@ -90,6 +96,14 @@ pub struct InterestRateModel {
     pub kink_bps: u32,           // utilization kink point in basis points
 }
 
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct TWAPData {
+    pub current_price: i128,     // current spot price
+    pub twap_price: i128,        // time-weighted average price
+    pub last_update: u64,        // timestamp of last price update
+}
+
 // ── Storage helpers ──────────────────────────────────────────────────────────
 #[contracttype]
 pub enum DataKey {
@@ -139,6 +153,14 @@ impl StellarKraal {
         // Initialize liquidity tracking
         env.storage().instance().set(&TOTAL_BORROWED, &0i128);
         env.storage().instance().set(&TOTAL_LIQUIDITY, &0i128);
+        
+        // Initialize TWAP (1 hour window = 3600 seconds)
+        env.storage().instance().set(&TWAP_WINDOW, &3600u64);
+        env.storage().instance().set(&LAST_PRICE, &0i128);
+        env.storage().instance().set(&LAST_PRICE_TIME, &0u64);
+        env.storage().instance().set(&TWAP_PRICE, &0i128);
+        env.storage().instance().set(&TWAP_SUM, &0i128);
+        env.storage().instance().set(&TWAP_COUNT, &0u32);
         Ok(())
     }
 
@@ -509,6 +531,81 @@ impl StellarKraal {
         Self::assert_initialized(&env)?;
         let utilization = Self::calculate_utilization(&env)?;
         Ok(Self::calculate_interest_rate(&env, utilization)?)
+    }
+
+    // ── submit_price ──────────────────────────────────────────────────────
+    /// Oracle submits a new price for collateral valuation
+    /// Updates TWAP based on the new price
+    pub fn submit_price(env: Env, oracle: Address, price: i128) -> Result<(), Error> {
+        Self::assert_initialized(&env)?;
+        if price <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+        oracle.require_auth();
+        
+        let stored_oracle: Address = env.storage().instance().get(&ORACLE).unwrap();
+        if oracle != stored_oracle {
+            return Err(Error::Unauthorized);
+        }
+        
+        let now = env.ledger().timestamp();
+        let window: u64 = env.storage().instance().get(&TWAP_WINDOW).unwrap_or(3600);
+        let last_time: u64 = env.storage().instance().get(&LAST_PRICE_TIME).unwrap_or(0);
+        
+        // Update TWAP with new price
+        let mut twap_sum: i128 = env.storage().instance().get(&TWAP_SUM).unwrap_or(0);
+        let mut twap_count: u32 = env.storage().instance().get(&TWAP_COUNT).unwrap_or(0);
+        
+        // Add new price to TWAP
+        twap_sum = twap_sum.checked_add(price).unwrap_or(i128::MAX);
+        twap_count = twap_count.saturating_add(1);
+        
+        // If window has passed, reset TWAP
+        if now.saturating_sub(last_time) >= window {
+            twap_sum = price;
+            twap_count = 1;
+        }
+        
+        let new_twap = if twap_count > 0 {
+            twap_sum / (twap_count as i128)
+        } else {
+            price
+        };
+        
+        env.storage().instance().set(&LAST_PRICE, &price);
+        env.storage().instance().set(&LAST_PRICE_TIME, &now);
+        env.storage().instance().set(&TWAP_PRICE, &new_twap);
+        env.storage().instance().set(&TWAP_SUM, &twap_sum);
+        env.storage().instance().set(&TWAP_COUNT, &twap_count);
+        
+        Ok(())
+    }
+
+    // ── get_twap_data ─────────────────────────────────────────────────────
+    pub fn get_twap_data(env: Env) -> Result<TWAPData, Error> {
+        Self::assert_initialized(&env)?;
+        let current: i128 = env.storage().instance().get(&LAST_PRICE).unwrap_or(0);
+        let twap: i128 = env.storage().instance().get(&TWAP_PRICE).unwrap_or(0);
+        let last_update: u64 = env.storage().instance().get(&LAST_PRICE_TIME).unwrap_or(0);
+        Ok(TWAPData {
+            current_price: current,
+            twap_price: twap,
+            last_update,
+        })
+    }
+
+    // ── set_twap_window ───────────────────────────────────────────────────
+    pub fn set_twap_window(env: Env, admin: Address, window_seconds: u64) -> Result<(), Error> {
+        Self::assert_initialized(&env)?;
+        Self::assert_admin(&env, &admin)?;
+        admin.require_auth();
+        
+        if window_seconds == 0 {
+            return Err(Error::InvalidAmount);
+        }
+        
+        env.storage().instance().set(&TWAP_WINDOW, &window_seconds);
+        Ok(())
     }
 
     // ── internal helpers ──────────────────────────────────────────────────
