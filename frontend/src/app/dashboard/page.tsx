@@ -7,31 +7,39 @@ import RepayPanel from "@/components/RepayPanel";
 import HealthGauge from "@/components/HealthGauge";
 import LoanRepaymentCalculator from "@/components/LoanRepaymentCalculator";
 import TransactionHistory from "@/components/TransactionHistory";
+import OnboardingModal from "@/components/OnboardingModal";
+import HelpMenu from "@/components/HelpMenu";
+import { useOnboarding } from "@/hooks/useOnboarding";
+import { useHealthFactor } from "@/hooks/useHealthFactor";
 
 export default function Dashboard() {
   const router = useRouter();
   const [wallet, setWallet] = useState<string | null>(null);
   const [loanId, setLoanId] = useState("");
   const [activeLoanId, setActiveLoanId] = useState("");
-  const [repayLoanId, setRepayLoanId] = useState("");
-  const [repayAmount, setRepayAmount] = useState("");
-
-  const { healthFactor, loading, lastUpdated, refresh } = useHealthFactor(activeLoanId);
+  
+  const { showOnboarding, openOnboarding, closeOnboarding } = useOnboarding();
+  const { healthFactor } = useHealthFactor(activeLoanId);
 
   function handleProceedToRepay(nextLoanId: string, nextAmount: string) {
-    setRepayLoanId(nextLoanId);
-    setRepayAmount(nextAmount);
+    // Navigate to repay section or handle repayment flow
+    setActiveLoanId(nextLoanId);
   }
 
   return (
     <main className="max-w-6xl mx-auto px-4 py-10">
-      <h1 className="text-3xl font-bold text-brown mb-6">Dashboard</h1>
+      <div className="flex justify-between items-center mb-6">
+        <h1 className="text-3xl font-bold text-brown">Dashboard</h1>
+        <HelpMenu onShowOnboarding={openOnboarding} />
+      </div>
+      
+      <OnboardingModal isOpen={showOnboarding} onClose={closeOnboarding} />
+      
       <WalletConnect onConnect={setWallet} />
       {wallet && (
         <>
           <CollateralCard
             walletAddress={wallet}
-            onRegisterCollateral={() => router.push("/borrow")}
           />
           <LoanRepaymentCalculator
             onProceed={handleProceedToRepay}
@@ -39,8 +47,6 @@ export default function Dashboard() {
           />
           <RepayPanel
             walletAddress={wallet}
-            initialLoanId={repayLoanId}
-            initialAmount={repayAmount}
           />
           <TransactionHistory walletAddress={wallet} />
           <div className="mt-8 bg-white rounded-2xl p-6 shadow">
@@ -64,14 +70,11 @@ export default function Dashboard() {
             {healthFactor !== null && (
               <HealthGauge
                 value={healthFactor}
-                loading={loading}
-                lastUpdated={lastUpdated}
-                onRefresh={refresh}
               />
             )}
           </div>
           <div className="mt-8">
-            <TransactionHistory />
+            <TransactionHistory walletAddress={wallet} />
           </div>
         </>
       )}
