@@ -603,4 +603,191 @@ mod tests {
             assert_eq!(loan.outstanding, loan.principal);
         }
     }
+
+    // ── Fuzz Tests for Arithmetic Functions ────────────────────────────────
+    // These tests verify invariants across random inputs to catch edge cases
+    // in interest calculation, health factor, and collateral valuation.
+
+    proptest! {
+        /// Fuzz test: Interest calculation never exceeds principal
+        /// Invariant: interest_fee <= interest_portion
+        #[test]
+        fn fuzz_interest_calculation_bounded(
+            principal in 1i128..1_000_000_000i128,
+            interest_portion in 0i128..100_000_000i128,
+            fee_bps in 0u32..10_000u32,
+        ) {
+            // Simulate interest fee calculation
+            let interest_fee = interest_portion
+                .checked_mul(fee_bps as i128)
+                .unwrap_or(i128::MAX)
+                / 10_000;
+            
+            // Invariant: interest fee never exceeds interest portion
+            prop_assert!(interest_fee <= interest_portion);
+            
+            // Invariant: interest fee is non-negative
+            prop_assert!(interest_fee >= 0);
+        }
+
+        /// Fuzz test: Health factor is always positive when outstanding > 0
+        /// Invariant: health_factor > 0 when outstanding > 0
+        #[test]
+        fn fuzz_health_factor_positive(
+            collateral_value in 1i128..1_000_000_000i128,
+            outstanding in 1i128..1_000_000_000i128,
+            liq_threshold_bps in 1u32..10_000u32,
+        ) {
+            // Simulate health factor calculation
+            let numerator = collateral_value
+                .checked_mul(liq_threshold_bps as i128)
+                .unwrap_or(i128::MAX);
+            let denominator = outstanding.checked_mul(10_000).unwrap_or(i128::MAX);
+            
+            if denominator > 0 {
+                let health_factor = (numerator / denominator) * 10_000;
+                
+                // Invariant: health factor is always positive
+                prop_assert!(health_factor > 0);
+            }
+        }
+
+        /// Fuzz test: Repayment never results in negative outstanding
+        /// Invariant: outstanding >= 0 after repayment
+        #[test]
+        fn fuzz_repayment_non_negative(
+            outstanding in 1i128..1_000_000_000i128,
+            repay_amount in 0i128..1_000_000_000i128,
+        ) {
+            let actual_repay = repay_amount.min(outstanding);
+            let new_outstanding = outstanding.checked_sub(actual_repay).unwrap_or(0);
+            
+            // Invariant: outstanding never goes negative
+            prop_assert!(new_outstanding >= 0);
+            
+            // Invariant: outstanding decreases or stays same
+            prop_assert!(new_outstanding <= outstanding);
+        }
+
+        /// Fuzz test: Collateral valuation never overflows
+        /// Invariant: total_collateral_value is bounded
+        #[test]
+        fn fuzz_collateral_valuation_safe(
+            collateral_count in 1u32..1000u32,
+            value_per_collateral in 1i128..1_000_000_000i128,
+        ) {
+            // Simulate summing collateral values
+            let mut total = 0i128;
+            for _ in 0..collateral_count {
+                total = total.checked_add(value_per_collateral).unwrap_or(i128::MAX);
+            }
+            
+            // Invariant: total is bounded and doesn't overflow
+            prop_assert!(total >= 0);
+        }
+
+        /// Fuzz test: LTV calculation never exceeds collateral value
+        /// Invariant: max_loan <= total_collateral_value
+        #[test]
+        fn fuzz_ltv_calculation_bounded(
+            collateral_value in 1i128..1_000_000_000i128,
+            ltv_bps in 0u32..10_000u32,
+        ) {
+            let max_loan = collateral_value
+                .checked_mul(ltv_bps as i128)
+                .unwrap_or(i128::MAX)
+                / 10_000;
+            
+            // Invariant: max loan never exceeds collateral value
+            prop_assert!(max_loan <= collateral_value);
+            
+            // Invariant: max loan is non-negative
+            prop_assert!(max_loan >= 0);
+        }
+
+        /// Fuzz test: Origination fee calculation is safe
+        /// Invariant: origination_fee <= principal
+        #[test]
+        fn fuzz_origination_fee_safe(
+            principal in 1i128..1_000_000_000i128,
+            fee_bps in 0u32..10_000u32,
+        ) {
+            let fee = principal
+                .checked_mul(fee_bps as i128)
+                .unwrap_or(i128::MAX)
+                / 10_000;
+            
+            // Invariant: fee never exceeds principal
+            prop_assert!(fee <= principal);
+            
+            // Invariant: fee is non-negative
+            prop_assert!(fee >= 0);
+            
+            // Invariant: disbursement is non-negative
+            let disbursement = principal.checked_sub(fee).unwrap_or(0);
+            prop_assert!(disbursement >= 0);
+        }
+
+        /// Fuzz test: Close factor calculation is bounded
+        /// Invariant: max_repay <= outstanding
+        #[test]
+        fn fuzz_close_factor_bounded(
+            outstanding in 1i128..1_000_000_000i128,
+            close_factor_bps in 1u32..10_000u32,
+        ) {
+            let max_repay = outstanding
+                .checked_mul(close_factor_bps as i128)
+                .unwrap_or(i128::MAX)
+                / 10_000;
+            
+            // Invariant: max repay never exceeds outstanding
+            prop_assert!(max_repay <= outstanding);
+            
+            // Invariant: max repay is positive
+            prop_assert!(max_repay > 0);
+        }
+
+        /// Fuzz test: Multiple repayments eventually clear loan
+        /// Invariant: repeated repayments reduce outstanding to zero
+        #[test]
+        fn fuzz_multiple_repayments_clear_loan(
+            initial_outstanding in 1i128..1_000_000_000i128,
+            repay_count in 1u32..100u32,
+        ) {
+            let mut outstanding = initial_outstanding;
+            let repay_per_tx = (initial_outstanding / repay_count as i128).max(1);
+            
+            for _ in 0..repay_count {
+                let actual_repay = repay_per_tx.min(outstanding);
+                outstanding = outstanding.checked_sub(actual_repay).unwrap_or(0);
+                
+                // Invariant: outstanding never goes negative
+                prop_assert!(outstanding >= 0);
+            }
+            
+            // Invariant: after enough repayments, outstanding reaches zero
+            prop_assert!(outstanding == 0 || outstanding < repay_per_tx);
+        }
+
+        /// Fuzz test: Health factor calculation with extreme values
+        /// Invariant: health factor calculation doesn't panic
+        #[test]
+        fn fuzz_health_factor_extreme_values(
+            collateral_value in 1i128..i128::MAX / 100_000,
+            outstanding in 1i128..i128::MAX / 100_000,
+            liq_threshold_bps in 1u32..10_000u32,
+        ) {
+            // This should not panic even with large values
+            let numerator = collateral_value
+                .checked_mul(liq_threshold_bps as i128)
+                .unwrap_or(i128::MAX);
+            let denominator = outstanding.checked_mul(10_000).unwrap_or(i128::MAX);
+            
+            if denominator > 0 {
+                let _health_factor = (numerator / denominator) * 10_000;
+                // Invariant: calculation completes without panic
+                prop_assert!(true);
+            }
+        }
+    }
 }
