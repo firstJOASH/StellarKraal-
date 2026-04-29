@@ -1,6 +1,7 @@
 "use client";
-import { useEffect } from "react";
-import { useWallet } from "@/hooks/useWallet";
+import { useState } from "react";
+import { isConnected, getAddress, setAllowed } from "@stellar/freighter-api";
+import { colors } from "@/lib/design-tokens";
 
 interface Props {
   onConnect: (address: string) => void;
@@ -37,7 +38,7 @@ export default function WalletConnect({ onConnect }: Props) {
   // Connected
   if (address) {
     return (
-      <div className="bg-brown/10 rounded-xl px-4 py-3 mb-6 text-sm font-mono text-brown">
+      <div className={`${colors.status.success.bg} rounded-xl px-4 py-3 mb-6 text-sm font-mono ${colors.status.success.text}`}>
         ✅ {address.slice(0, 8)}…{address.slice(-6)}
       </div>
     );
@@ -48,12 +49,11 @@ export default function WalletConnect({ onConnect }: Props) {
     <div className="mb-6">
       <button
         onClick={connect}
-        disabled={connecting}
-        className="bg-brown text-cream px-5 py-2.5 rounded-xl font-semibold hover:bg-brown/80 transition disabled:opacity-50"
+        className={`${colors.primary.bg} ${colors.primary.text} px-5 py-2.5 rounded-xl font-semibold ${colors.primary.hover} transition ${colors.interactive.focus}`}
       >
         {connecting ? "Connecting…" : "Connect Freighter Wallet"}
       </button>
-      {error && <p className="text-red-500 text-sm mt-2">{error}</p>}
+      {error && <p className={`${colors.status.error.text} text-sm mt-2`}>{error}</p>}
     </div>
   );
 }

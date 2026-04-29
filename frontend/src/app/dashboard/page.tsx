@@ -6,23 +6,43 @@ import CollateralCard from "@/components/CollateralCard";
 import RepayPanel from "@/components/RepayPanel";
 import HealthGauge from "@/components/HealthGauge";
 import LoanRepaymentCalculator from "@/components/LoanRepaymentCalculator";
-import SkeletonHealthDashboard from "@/components/SkeletonHealthDashboard";
-import { useMinLoadingTime } from "@/hooks/useMinLoadingTime";
+import TransactionHistory from "@/components/TransactionHistory";
+import { useHealthFactor } from "@/hooks/useHealthFactor";
 
 export default function Dashboard() {
   const router = useRouter();
   const [wallet, setWallet] = useState<string | null>(null);
   const [loanId, setLoanId] = useState("");
   const [activeLoanId, setActiveLoanId] = useState("");
-  const [repayLoanId, setRepayLoanId] = useState("");
-  const [repayAmount, setRepayAmount] = useState("");
-  const [isHealthLoading, withMinLoading] = useMinLoadingTime();
-
-  const { healthFactor, loading, lastUpdated, refresh } = useHealthFactor(activeLoanId);
+  
+  const { showOnboarding, openOnboarding, closeOnboarding } = useOnboarding();
+  const { healthFactor } = useHealthFactor(activeLoanId);
 
   function handleProceedToRepay(nextLoanId: string, nextAmount: string) {
-    setRepayLoanId(nextLoanId);
-    setRepayAmount(nextAmount);
+    // Navigate to repay section or handle repayment flow
+    setActiveLoanId(nextLoanId);
+  }
+
+  async function fetchHealth() {
+    if (!loanId) return;
+    await withMinLoading(async () => {
+      const res = await fetch(
+        `${process.env.NEXT_PUBLIC_API_URL}/api/health/${loanId}`,
+      );
+      const data = await res.json();
+      setHealthFactor(Number(data.health_factor ?? 0));
+    });
+  }
+
+  async function fetchHealth() {
+    if (!loanId) return;
+    await withMinLoading(async () => {
+      const res = await fetch(
+        `${process.env.NEXT_PUBLIC_API_URL}/api/health/${loanId}`,
+      );
+      const data = await res.json();
+      setHealthFactor(Number(data.health_factor ?? 0));
+    });
   }
 
   async function fetchHealth() {
@@ -38,13 +58,18 @@ export default function Dashboard() {
 
   return (
     <main className="max-w-6xl mx-auto px-4 py-10">
-      <h1 className="text-3xl font-bold text-brown mb-6">Dashboard</h1>
+      <div className="flex justify-between items-center mb-6">
+        <h1 className="text-3xl font-bold text-brown">Dashboard</h1>
+        <HelpMenu onShowOnboarding={openOnboarding} />
+      </div>
+      
+      <OnboardingModal isOpen={showOnboarding} onClose={closeOnboarding} />
+      
       <WalletConnect onConnect={setWallet} />
       {wallet && (
         <>
           <CollateralCard
             walletAddress={wallet}
-            onRegisterCollateral={() => router.push("/borrow")}
           />
           <LoanRepaymentCalculator
             onProceed={handleProceedToRepay}
@@ -52,8 +77,6 @@ export default function Dashboard() {
           />
           <RepayPanel
             walletAddress={wallet}
-            initialLoanId={repayLoanId}
-            initialAmount={repayAmount}
           />
           {isHealthLoading ? (
             <SkeletonHealthDashboard />
@@ -78,7 +101,12 @@ export default function Dashboard() {
               </div>
               {healthFactor !== null && <HealthGauge value={healthFactor} />}
             </div>
-          )}
+            {healthFactor !== null && (
+              <HealthGauge
+                value={healthFactor}
+              />
+            )}
+          </div>
         </>
       )}
     </main>
