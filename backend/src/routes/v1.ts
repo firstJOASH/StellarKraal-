@@ -12,29 +12,24 @@ import {
   xdr,
   Networks,
 } from "@stellar/stellar-sdk";
-import { SorobanRpc } from "@stellar/stellar-sdk";
 import { z } from "zod";
 import { config } from "../config";
 import { pool } from "../utils/connectionPool";
 import { getAppraisal, setAppraisal, invalidateAll } from "../utils/appraisalCache";
 import { asyncHandler } from "../utils/asyncHandler";
 import { stellarPublicKeySchema } from "../validators/stellar";
-import { registerWebhook, getWebhooks, getDeliveryLogs } from "../webhooks";
+import { registerWebhook, getWebhooks, getDeliveryLogs, fireWebhooks } from "../webhooks";
 import { timeoutMiddleware } from "../middleware/timeout";
 import { writeLimiter } from "../middleware/rateLimit";
-
-const { Server } = SorobanRpc;
-
-const RPC_URL = process.env.RPC_URL || "https://soroban-testnet.stellar.org";
+import { fireAlert } from "../utils/alerting";
+import { rules } from "../utils/alertRules";
+import rpcClient from "../utils/rpcClient";
 const CONTRACT_ID = process.env.CONTRACT_ID || "";
 const NETWORK_PASSPHRASE =
   config.NEXT_PUBLIC_NETWORK === "mainnet" ? Networks.PUBLIC : Networks.TESTNET;
 
 const APP_VERSION = process.env.npm_package_version || "1.0.0";
 const startTime = Date.now();
-
-const server = new Server(RPC_URL);
-const rpcClient = server;
 
 // ── Validation Schemas ────────────────────────────────────────────────────────
 
@@ -160,6 +155,7 @@ v1Router.post(
       idsScVal,
       nativeToScVal(BigInt(amount), { type: "i128" }),
     ]);
+    fireWebhooks("loan.approved", { borrower, collateral_ids, amount });
     res.json({ xdr: xdrTx });
   })
 );
@@ -180,6 +176,7 @@ v1Router.post(
       nativeToScVal(BigInt(loan_id), { type: "u64" }),
       nativeToScVal(BigInt(amount), { type: "i128" }),
     ]);
+    fireWebhooks("loan.repaid", { borrower, loan_id, amount });
     res.json({ xdr: xdrTx });
   })
 );
@@ -200,6 +197,7 @@ v1Router.post(
       nativeToScVal(BigInt(loan_id), { type: "u64" }),
       nativeToScVal(BigInt(repay_amount), { type: "i128" }),
     ]);
+    fireWebhooks("loan.liquidated", { liquidator, loan_id, repay_amount });
     res.json({ xdr: xdrTx });
   })
 );
@@ -267,7 +265,11 @@ v1Router.post(
     if (!url || typeof url !== "string") {
       return res.status(400).json({ error: "url is required" });
     }
-    res.status(201).json(registerWebhook(url));
+    try {
+      return res.status(201).json(registerWebhook(url));
+    } catch (err: any) {
+      return res.status(400).json({ error: err.message });
+    }
   }
 );
 
@@ -281,77 +283,93 @@ v1Router.get("/admin/webhooks/logs", (_req: Request, res: Response) => {
   res.json(getDeliveryLogs());
 });
 
-// GET /collateral/list
-v1Router.get("/collateral/list", async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const owner = req.query.owner as string;
-    if (!owner) {
-      return res.status(400).json({ error: "owner query parameter is required" });
-    }
-    const contract = new Contract(CONTRACT_ID);
-    const account = await rpcClient.getAccount(
-      "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN"
-    );
-    const tx = new TransactionBuilder(account, {
-      fee: BASE_FEE,
-      networkPassphrase: NETWORK_PASSPHRASE,
-    })
-      .addOperation(contract.call("list_collateral", new Address(owner).toScVal()))
-      .setTimeout(30)
-      .build();
-    const result = await rpcClient.simulateTransaction(tx);
-    const collaterals = (result as any).result?.retval || [];
-    res.json({ collaterals });
-  } catch (err) {
-    next(err);
-  }
-});
+/**
+ * POST /alerts/webhook
+ * Receiver for AWS SNS notifications (specifically for BACKUP_JOB_FAILED)
+ */
+v1Router.post("/alerts/webhook", async (req: Request, res: Response) => {
+  const body = req.body;
 
-// GET /collateral/:id
-v1Router.get("/collateral/:id", async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const owner = req.query.owner as string;
-    if (!owner) {
-      return res.status(400).json({ error: "owner query parameter is required" });
+  // Handle SNS subscription confirmation
+  if (req.header("x-amz-sns-message-type") === "SubscriptionConfirmation") {
+    const subscribeUrl = body.SubscribeURL;
+    if (subscribeUrl) {
+      await fetch(subscribeUrl);
+      return res.status(200).send("Subscribed");
     }
-    const contract = new Contract(CONTRACT_ID);
-    const account = await rpcClient.getAccount(
-      "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN"
-    );
-    const tx = new TransactionBuilder(account, {
-      fee: BASE_FEE,
-      networkPassphrase: NETWORK_PASSPHRASE,
-    })
-      .addOperation(
-        contract.call(
-          "get_collateral",
-          nativeToScVal(BigInt(req.params.id), { type: "u64" }),
-          new Address(owner).toScVal()
-        )
-      )
-      .setTimeout(30)
-      .build();
-    const result = await rpcClient.simulateTransaction(tx);
-    const collateral = (result as any).result?.retval;
-    const loansRes = await rpcClient.simulateTransaction(
-      new TransactionBuilder(account, {
-        fee: BASE_FEE,
-        networkPassphrase: NETWORK_PASSPHRASE,
-      })
-        .addOperation(
-          contract.call(
-            "list_loans_for_collateral",
-            nativeToScVal(BigInt(req.params.id), { type: "u64" })
-          )
-        )
-        .setTimeout(30)
-        .build()
-    );
-    const loans = (loansRes as any).result?.retval || [];
-    res.json({ collateral, loans });
-  } catch (err) {
-    next(err);
   }
+
+  // Handle actual notification
+  if (req.header("x-amz-sns-message-type") === "Notification") {
+    try {
+      const message = JSON.parse(body.Message);
+      // Check if it's a backup failure event
+      if (message["detail-type"] === "Backup Job State Change" && message.detail.state === "FAILED") {
+        await fireAlert(rules.backupFailure, "AWS Backup job failed", {
+          backupJobId: message.detail.backupJobId,
+          resourceArn: message.detail.resourceArn,
+        });
+      }
+    } catch (err) {
+      // Not a JSON message or different format
+    }
+  }
+
+  res.status(200).send("OK");
 });
 
 export { v1Router, startTime, APP_VERSION };
+
+// ── User Settings ─────────────────────────────────────────────────────────────
+
+const settingsSchema = z.object({
+  notifications: z.object({
+    loanApproved: z.boolean(),
+    loanRepaid: z.boolean(),
+    liquidationWarning: z.boolean(),
+  }).optional(),
+  language: z.string().min(2).max(10).optional(),
+  currency: z.string().min(3).max(6).optional(),
+});
+
+type UserSettings = z.infer<typeof settingsSchema> & {
+  walletAddress: string;
+  joinDate: string;
+};
+
+// In-memory store (replace with DB persistence in production)
+const settingsStore = new Map<string, UserSettings>();
+
+v1Router.get("/settings/:wallet", (req: Request, res: Response) => {
+  const wallet = req.params.wallet;
+  const existing = settingsStore.get(wallet);
+  if (!existing) {
+    // Return defaults for new users
+    return res.json({
+      walletAddress: wallet,
+      joinDate: new Date().toISOString(),
+      notifications: { loanApproved: true, loanRepaid: true, liquidationWarning: true },
+      language: "en",
+      currency: "USD",
+    });
+  }
+  res.json(existing);
+});
+
+v1Router.put("/settings/:wallet", (req: Request, res: Response) => {
+  const wallet = req.params.wallet;
+  const validation = settingsSchema.safeParse(req.body);
+  if (!validation.success) {
+    return res.status(400).json({ error: "Validation failed", details: validation.error.errors });
+  }
+  const existing = settingsStore.get(wallet) ?? {
+    walletAddress: wallet,
+    joinDate: new Date().toISOString(),
+    notifications: { loanApproved: true, loanRepaid: true, liquidationWarning: true },
+    language: "en",
+    currency: "USD",
+  };
+  const updated: UserSettings = { ...existing, ...validation.data };
+  settingsStore.set(wallet, updated);
+  res.json(updated);
+});
